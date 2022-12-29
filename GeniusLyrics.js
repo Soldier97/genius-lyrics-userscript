@@ -69,21 +69,24 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
     }
   })
 
-  function unScroll () { // unable to do delete window.xxx
-    // only for mainWin
-    window.lastScrollTopPosition = null
-    window.scrollLyricsBusy = false
-    window.staticOffsetTop = null
-    window.latestScrollPos = null
-    window.newScrollTopPosition = null
-    window.isPageAbleForAutoScroll = null
+  function unScroll () { // unable to do delete window.xxx;
+    // iframe
+    genius.autoscroll.scrollLyricsBusy = false
+    genius.autoscroll.lastScrollTopPosition = null
+    genius.autoscroll.staticOffsetTop = null
+    genius.autoscroll.latestScrollPos = null
+    genius.autoscroll.newScrollTopPosition = null
+
+    // main window
+    genius.autoscroll.isPageAbleForAutoScroll = false
+    genius.autoscroll.currentStaticOffsetTop = null
+    genius.autoscroll.scrollingElementInfo = null
   }
   function hideLyricsWithMessage () {
     const ret = custom.hideLyrics(...arguments)
     if (ret === false) { // cancelled
       return false
     }
-    unScroll()
     window.postMessage({ iAm: custom.scriptName, type: 'lyricsDisplayState', visibility: 'hidden' }, '*')
     return ret
   }
@@ -149,6 +152,24 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
       removeStats: false, // note: true for YoutubeGeniusLyrics only
       noRelatedLinks: false,
       onlyCompleteLyrics: false
+    },
+    autoscroll:{
+      // cubicBezier: null,
+      enableDerate: false,
+      debug: false,
+      param3: 0,
+      // iframe
+      lyricsContainerSelector: null,
+      defaultStaticOffsetTop: null,
+      scrollLyricsBusy: false,
+      lastScrollTopPosition: null,
+      staticOffsetTop: null,
+      latestScrollPos: null,
+      newScrollTopPosition: null,
+      // main window
+      isPageAbleForAutoScroll: false,
+      currentStaticOffsetTop: null,
+      scrollingElementInfo: null
     },
     onThemeChanged: [],
     debug: false
@@ -709,25 +730,27 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
     })
   }
 
-  async function delayScrolling (scrollLyricsGeneric) {
-    let p1
-    let p2 = document.scrollingElement.scrollTop
-    do {
-      p1 = p2
-      await new Promise(r => window.requestAnimationFrame(r)) // eslint-disable-line promise/param-names
-      p2 = document.scrollingElement.scrollTop
-    } while (`${p1}` !== `${p2}`)
-    // the scrollTop is stable now
-    window.scrollLyricsBusy = false
-    if (typeof window.latestScrollPos === 'number') {
-      scrollLyricsGeneric(window.latestScrollPos, true)
-    }
+  async function delayScrolling () { // action in iframe
+    try {
+      let p1
+      let p2 = document.scrollingElement.scrollTop
+      do {
+        p1 = p2
+        await new Promise(r => window.requestAnimationFrame(r)) // eslint-disable-line promise/param-names
+        p2 = document.scrollingElement.scrollTop
+      } while (`${p1}` !== `${p2}`)
+      // the scrollTop is stable now
+      genius.autoscroll.scrollLyricsBusy = false
+      if (genius.autoscroll.latestScrollPos && typeof genius.autoscroll.latestScrollPos.progress === 'number') {
+        scrollLyricsGeneric(genius.autoscroll.latestScrollPos, true)
+      }
+    } catch (e) { console.warn(e) }
   }
 
   function setArrowUpDownStyle (resumeButton) {
     if (!resumeButton) return
     const oldAttribute = resumeButton.getAttribute('arrow-icon')
-    const newAttribute = (document.scrollingElement.scrollTop - window.newScrollTopPosition < 0) ? 'up' : 'down'
+    const newAttribute = (document.scrollingElement.scrollTop - genius.autoscroll.newScrollTopPosition < 0) ? 'up' : 'down'
     if (oldAttribute !== newAttribute) {
       resumeButton.setAttribute('arrow-icon', newAttribute)
     }
@@ -735,24 +758,25 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
 
   function onResumeAutoScrollClick () {
     const resumeAutoScrollButtonContainer = document.querySelector('#resumeAutoScrollButtonContainer')
-    if (resumeAutoScrollButtonContainer === null || typeof window.newScrollTopPosition !== 'number') return
-    window.scrollLyricsBusy = true
-    window.lastScrollTopPosition = null
+    if (resumeAutoScrollButtonContainer === null || typeof genius.autoscroll.newScrollTopPosition !== 'number') return
+    genius.autoscroll.scrollLyricsBusy = true
+    genius.autoscroll.lastScrollTopPosition = null
     resumeAutoScrollButtonContainer.classList.remove('btn-show')
     // Resume auto scrolling
     document.scrollingElement.scrollTo({
-      top: window.newScrollTopPosition,
+      top: genius.autoscroll.newScrollTopPosition,
       behavior: 'smooth'
     })
     setTimeout(() => {
-      window.scrollLyricsBusy = false
-    }, 100)
+      genius.autoscroll.scrollLyricsBusy = false
+    }, 140)
   }
 
   function onResumeAutoScrollFromHereClick () {
+    if(!genius.autoscroll.latestScrollPos) return
     const resumeAutoScrollButtonContainer = document.querySelector('#resumeAutoScrollButtonContainer')
-    if (resumeAutoScrollButtonContainer === null || typeof window.staticOffsetTop !== 'number' || typeof window.newScrollTopPosition !== 'number') return
-    window.scrollLyricsBusy = true
+    if (resumeAutoScrollButtonContainer === null || typeof genius.autoscroll.staticOffsetTop !== 'number' || typeof genius.autoscroll.newScrollTopPosition !== 'number') return
+    genius.autoscroll.scrollLyricsBusy = true
     resumeAutoScrollButtonContainer.classList.remove('btn-show')
     // Resume auto scrolling from current position
     if (genius.debug) {
@@ -761,48 +785,296 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
       }
       window.first = false
     }
-    window.lastScrollTopPosition = null
-    window.staticOffsetTop += document.scrollingElement.scrollTop - window.newScrollTopPosition
+    let p0 = genius.autoscroll.latestScrollPos
+    genius.autoscroll.lastScrollTopPosition = null
+    let s0 = typeof genius.autoscroll.staticOffsetTop === 'number' ? genius.autoscroll.staticOffsetTop : defaultStaticOffsetTop
+
+
+
+    if (genius.autoscroll.enableDerate === true) {
+      // param3 = 1.0 => same speed like without staticTop
+      // param3 = 0.0 => faster as the lyrics end at the same position
+     
+      /*
+      if (m -  < 0.3) {
+        genius.autoscroll.param3 = 0.9
+      } else if (m < 0.6) {
+        genius.autoscroll.param3 = 0.5
+      } else if (m < 0.9) {
+        genius.autoscroll.param3 = 0.2
+      } else {
+        genius.autoscroll.param3 = 0.0
+      }
+      */
+    }
+    
+ 
+  
+    let st = getNewScrollTop(s0)
+    // genius.autoscroll.staticOffsetTop += document.scrollingElement.scrollTop - genius.autoscroll.newScrollTopPosition
+
+    // lastScrollTopPosition -> document.scrollingElement.scrollTop
+    /*let st1 = document.scrollingElement.scrollTop
+    
+    let sa = -getScrollingElementInfo().maxScrollTop
+    let sb = getScrollingElementInfo().maxScrollTop
+    console.log(220, sa,sb, document.scrollingElement.scrollTop - genius.autoscroll.newScrollTopPosition)
+    while(sb-sa>0.001){
+      let s = (sa+sb)/2
+      genius.autoscroll.staticOffsetTop = s
+      let st = getNewScrollTop()
+      console.log(330, sa,sb,s, st)
+      if(st>st1){
+        sb=s
+      }else if(st<st1){
+        sa=s
+      }else{
+        sa=s
+        sb=s
+      }
+    }
+    let s = (sa+sb)/2
+    genius.autoscroll.staticOffsetTop = s
+    console.log(440, s0, s, getNewScrollTop(), st1)
+    */
+
+    let delta = (document.scrollingElement.scrollTop - st)
+
+    st = getNewScrollTop(s0)
+
+
+    let s100 = s0 + delta
+
+    let targetResult = document.scrollingElement.scrollTop
+
+/*
+    if(genius.autoscroll.debug === true){
+
+      let s50 = (s0+s100)/2
+      let s25 = (s0+s50)/2
+      let s75 = (s100+s50)/2
+      console.log(s0, getNewScrollTop(s0), targetResult)
+      console.log(s25, getNewScrollTop(s25), targetResult)
+      console.log(s50, getNewScrollTop(s50), targetResult)
+      console.log(s75, getNewScrollTop(s75), targetResult)
+      console.log(s100, getNewScrollTop(s100), targetResult)
+
+    }
+*/
+// genius.autoscroll.staticOffsetTop = (s100 - s0) * 1.0 + s0
+
+    let k = (targetResult - st) / (getNewScrollTop(s100)-st)
+
+    if(genius.autoscroll.debug === true){
+      console.log('k', k)
+      console.log((s100 - s0) * k + s0, getNewScrollTop((s100 - s0) * k + s0), targetResult)
+    }
+
+    genius.autoscroll.staticOffsetTop = (s100 - s0) * k + s0
+
+
+    if(genius.autoscroll.enableDerate === true){
+
+      const scrollingElementInfo = getScrollingElementInfo()
+ 
+
+         let currentStaticOffsetTop = scrollingElementInfo.currentStaticOffsetTop
+
+         let {
+             divScrollHeight, iframeHeight} =scrollingElementInfo
+
+           let rate = ((divScrollHeight-iframeHeight))/(((divScrollHeight-iframeHeight)) - currentStaticOffsetTop )
+
+          if(rate<1&&rate>0){
+
+            let y0 = (genius.autoscroll.rate || 1.0) * p0.progressValue + (genius.autoscroll.y0 || 0.0) - rate * p0.progressValue
+
+            genius.autoscroll.rate = rate
+            genius.autoscroll.y0 = y0
+          }
+ 
+
+
+      /*
+      delta = genius.autoscroll.staticOffsetTop - s0
+
+      window.deltaH = window.deltaH || 0
+      
+      if(progress < 0.3){
+        window.deltaH += delta*1.45 * genius.autoscroll.param1
+      }else if(progress<0.6){
+        window.deltaH += delta*1.15 * genius.autoscroll.param1
+      }else if(progress<0.9){
+        window.deltaH += delta*0.85 * genius.autoscroll.param1
+      }else{
+        window.deltaH += delta*0.7 * genius.autoscroll.param1
+      }
+      */
+    
+      /* deltaH can be zero; deltaH is to further de-rate the autoscroll speed; 
+      if -deltaH is significatly greater than zero, the last sentence of lyrics might not be visible at the end 
+      Since Genius.com do not have length of the song, it can be helpful if the lyrics is long version.
+      */
+    }
+
+    /*
+    let st
+    let pi = 0
+    let targetResult = document.scrollingElement.scrollTop
+    while (pi++ < 10) {
+      st = getNewScrollTop()
+
+      genius.autoscroll.staticOffsetTop += document.scrollingElement.scrollTop - st
+
+      console.log(301 + pi, document.scrollingElement.scrollTop - st, getNewScrollTop(), genius.autoscroll.staticOffsetTop)
+    }*/
+
+
+
+    const scrollingElementInfo = getScrollingElementInfo()
+    top.postMessage({ iAm: custom.scriptName, type: 'autoscrollSetup', scrollingElementInfo, currentStaticOffsetTop: genius.autoscroll.staticOffsetTop, defaultStaticOffsetTop: theme.defaultStaticOffsetTop }, '*')
     setTimeout(() => {
-      window.scrollLyricsBusy = false
-    }, 30)
+      genius.autoscroll.scrollLyricsBusy = false
+    }, 140)
   }
 
-  function scrollLyricsFunction (lyricsContainerSelector, defaultStaticOffsetTop) {
-    // Creates a scroll function for a specific theme
-    return async function scrollLyricsGeneric (position, force) {
-      window.latestScrollPos = position
+  function getScrollingElementInfo (div) { // action in iframe
+    const iframeHeight = document.scrollingElement.clientHeight
+    const scrollHeight = document.scrollingElement.scrollHeight
+    const maxScrollTop = scrollHeight - iframeHeight
+    div = div || document.querySelector(theme.scrollableContainer)
+    const divScrollHeight = div.scrollHeight
+    div = null
+    const firstLineTop = undefined
 
-      if (window.scrollLyricsBusy) return
-      window.scrollLyricsBusy = true
 
-      const staticTop = typeof window.staticOffsetTop === 'number' ? window.staticOffsetTop : defaultStaticOffsetTop
+    let m = document.scrollingElement.scrollTop / maxScrollTop
+    if(typeof m ==='number' && m>=0 && m<=1){
+      m = +m.toFixed(3)
+    }else{
+      m=null
+    }
+    let w = null
+    
+    if(genius.autoscroll.latestScrollPos){
+      
+    w = (genius.autoscroll.latestScrollPos.progress - genius.autoscroll.latestScrollPos.y0)/genius.autoscroll.latestScrollPos.rate
+    if(typeof w ==='number' && w>=0 && w<=1){
+      w = +w.toFixed(3)
+    }else{
+      w=null
+    }
+    }
+    let s0 = typeof genius.autoscroll.staticOffsetTop === 'number' ? genius.autoscroll.staticOffsetTop : theme.defaultStaticOffsetTop
 
-      const div = document.querySelector(lyricsContainerSelector)
-      const offset = genius.debug ? sumOffsets(div) : null
-      const offsetTop = (div.getBoundingClientRect().top - document.scrollingElement.getBoundingClientRect().top)
+    
 
-      const lastPos = window.lastScrollTopPosition
-      const iframeHeight = document.scrollingElement.clientHeight
-      let newScrollTop = staticTop + (div.scrollHeight - iframeHeight) * position + offsetTop
-      const maxScrollTop = document.scrollingElement.scrollHeight - iframeHeight
-      let btnContainer = document.querySelector('#resumeAutoScrollButtonContainer')
+    //const firstLineTop = document.querySelector('div[data-lyrics-container="true"]').getBoundingClientRect().top - document.scrollingElement.getBoundingClientRect().top
+    return {iframeHeight, scrollHeight, maxScrollTop, divScrollHeight, firstLineTop, m, w,currentStaticOffsetTop:s0 }
+  }
 
-      if (newScrollTop > maxScrollTop) {
-        newScrollTop = maxScrollTop
-      } else if (newScrollTop < 0) {
-        newScrollTop = 0
+
+  function getNewScrollTop(staticTop){
+
+    let progress = genius.autoscroll.latestScrollPos.progress
+    const deltaH = window.deltaH || 0
+
+
+    const lyricsContainerSelector = theme.scrollableContainer
+
+    const div = document.querySelector(lyricsContainerSelector)
+    const offset = genius.debug ? sumOffsets(div) : null
+    const offsetTop = (div.getBoundingClientRect().top - document.scrollingElement.getBoundingClientRect().top)
+
+    const lastPos = genius.autoscroll.lastScrollTopPosition
+    const scrollingElementInfo = getScrollingElementInfo(div)
+    const iframeHeight = scrollingElementInfo.iframeHeight
+    const maxScrollTop = scrollingElementInfo.maxScrollTop
+    const divScrollHeight = scrollingElementInfo.divScrollHeight
+    // let newScrollTop = staticTop + (divScrollHeight - iframeHeight) * position + offsetTop
+    let st0 = offsetTop + staticTop
+    let st1 = offsetTop + (divScrollHeight - iframeHeight) + staticTop*genius.autoscroll.param3
+    // original rate of change is 0 ....  (divScrollHeight - iframeHeight)
+    // new rate of change is staticTop ... (divScrollHeight - iframeHeight)
+    // ( 0 + (divScrollHeight - iframeHeight) ) * progress = ( staticTop + (divScrollHeight - iframeHeight) ) * progress'
+    //  progress' = progress * ( 0 + (divScrollHeight - iframeHeight) ) / ( staticTop + (divScrollHeight - iframeHeight) ) 
+    //let progressFactor = ( 0 + (divScrollHeight - iframeHeight) ) / ( staticTop + (divScrollHeight - iframeHeight) ) // < 1.0
+    //progress *= progressFactor
+
+    if (progress < 0) progress = 0.0
+    else if (progress > 1) progress = 1.0
+
+
+    /*
+    staticTop/(divScrollHeight - iframeHeight) = 1   -1 ... 1
+    staticTop/(divScrollHeight - iframeHeight) = 0.0    0....1
+    staticTop/(divScrollHeight - iframeHeight) = -0.25   0.25 ... 1
+    staticTop/(divScrollHeight - iframeHeight) = -0.5   0.5 .... 1
+    staticTop/(divScrollHeight - iframeHeight) = -1   1 .... 1
+    */
+
+    // let k = staticTop / (divScrollHeight - iframeHeight)
+
+    let st = offsetTop + staticTop +  ((divScrollHeight - iframeHeight) - staticTop ) * progress
+
+    //  st = offsetTop + staticTop +  ((divScrollHeight - iframeHeight) - staticTop ) * progress
+
+
+
+
+    return st
+  }
+
+
+  async function scrollLyricsGeneric (progressObj, force) { // action in iframe
+    // progress varies from [0, 1]
+    try{
+
+
+      let rate=1
+      let y0 = 0
+      if(genius.autoscroll.rate && genius.autoscroll.enableDerate){
+          rate = genius.autoscroll.rate
+          y0 = genius.autoscroll.y0
       }
 
-      if (lastPos > 0 && Math.abs(lastPos - document.scrollingElement.scrollTop) > 5) { // lastPos !== null
-        if (!force && document.visibilityState === 'visible') {
-          // it is possible that the scrolltop is updating by scrollTo({behavior:'smooth'})
-          delayScrolling(scrollLyricsGeneric)
-          return
-        }
-        window.staticOffsetTop = staticTop
-        window.newScrollTopPosition = newScrollTop
+      progressObj.rate = rate
+      progressObj.y0 = y0
+      progressObj.progress = progressObj.progressValue *rate + y0
+      
 
+      genius.autoscroll.latestScrollPos = progressObj
+      console.log(progressObj)
+      let progress = progressObj.progress
+
+      if (genius.autoscroll.scrollLyricsBusy) return
+      genius.autoscroll.scrollLyricsBusy = true
+  
+      const lyricsContainerSelector = theme.scrollableContainer
+  
+      const staticTop = typeof genius.autoscroll.staticOffsetTop === 'number' ? genius.autoscroll.staticOffsetTop : theme.defaultStaticOffsetTop
+  
+      const div = document.querySelector(lyricsContainerSelector)
+      const offset = genius.debug ? sumOffsets(div) : null
+      const lastPos = genius.autoscroll.lastScrollTopPosition
+      const scrollingElementInfo = getScrollingElementInfo(div)
+      const maxScrollTop = scrollingElementInfo.maxScrollTop
+      let newScrollTop = getNewScrollTop(staticTop)
+
+      let btnContainer = document.querySelector('#resumeAutoScrollButtonContainer')
+
+
+      async function showButtons(){
+
+
+        
+        let staticTopChanged = genius.autoscroll.staticOffsetTop !== staticTop
+        genius.autoscroll.newScrollTopPosition = newScrollTop
+        if (staticTopChanged) {
+          genius.autoscroll.staticOffsetTop = staticTop
+          const scrollingElementInfo = getScrollingElementInfo()
+          top.postMessage({ iAm: custom.scriptName, type: 'autoscrollSetup', scrollingElementInfo, currentStaticOffsetTop: genius.autoscroll.staticOffsetTop, defaultStaticOffsetTop: theme.defaultStaticOffsetTop }, '*')
+        }
         // User scrolled -> stop auto scroll
         if (!btnContainer) {
           const resumeButton = document.createElement('div')
@@ -826,47 +1098,119 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
           setArrowUpDownStyle(resumeButton)
         }
         await Promise.resolve(0) // wait for DOM
-        if (newScrollTop > 0 && newScrollTop < maxScrollTop) {
-          btnContainer.classList.add('btn-show')
-        }
+        
+        btnContainer.classList.add('btn-show')
+        
         await Promise.resolve(0) // wait for DOM
-        window.scrollLyricsBusy = false
+        genius.autoscroll.scrollLyricsBusy = false
+        
+      }
+
+
+      if ((newScrollTop < 0 || newScrollTop > maxScrollTop)) {
+        
+
+        if((genius.autoscroll.lastScrollTopPosition===0 || genius.autoscroll.lastScrollTopPosition ===maxScrollTop) ){
+
+          if (newScrollTop < 0) newScrollTop = 0
+          else if (newScrollTop > maxScrollTop) newScrollTop = maxScrollTop
+
+          if( genius.autoscroll.lastScrollTopPosition === newScrollTop){
+
+
+            if (lastPos >= 0 && Math.abs(lastPos - document.scrollingElement.scrollTop) > 5 ) { // lastPos !== null
+        
+
+              if (!force && document.visibilityState === 'visible') {
+                // it is possible that the scrolltop is updating by scrollTo({behavior:'smooth'})
+                delayScrolling() // action in iframe
+                return
+              }
+      
+              await showButtons()
+              genius.autoscroll.scrollLyricsBusy = false
+              return
+            }
+            
+            genius.autoscroll.scrollLyricsBusy = true
+            setTimeout(() => {
+              genius.autoscroll.scrollLyricsBusy = false
+            }, 300)
+
+            return
+  
+          }
+  
+        }else{
+          if (newScrollTop < 0) newScrollTop = 0
+          else if (newScrollTop > maxScrollTop) newScrollTop = maxScrollTop
+
+        }
+
+
+  
+          genius.autoscroll.scrollLyricsBusy = true
+          genius.autoscroll.lastScrollTopPosition = newScrollTop
+          document.scrollingElement.scrollTo({
+            top: newScrollTop,
+            behavior: 'smooth'
+          })
+          setTimeout(() => {
+            genius.autoscroll.scrollLyricsBusy = false
+          }, 300)
+      
+        
         return
       }
 
+
+      if (lastPos > 0 && Math.abs(lastPos - document.scrollingElement.scrollTop) > 5 ) { // lastPos !== null
+        
+
+        if (!force && document.visibilityState === 'visible') {
+          // it is possible that the scrolltop is updating by scrollTo({behavior:'smooth'})
+          delayScrolling() // action in iframe
+          return
+        }
+
+        await showButtons()
+        return
+      }
+  
       if (btnContainer) {
         btnContainer.classList.remove('btn-show')
       }
-
-      window.lastScrollTopPosition = newScrollTop
+  
+      genius.autoscroll.lastScrollTopPosition = newScrollTop
+      document.scrollingElement.classList.add('scrolling-element')
       document.scrollingElement.scrollTo({
         top: newScrollTop,
         behavior: 'smooth'
       })
-
+  
       if (genius.debug) {
         if (!window.first) {
           window.first = true
-
+  
           for (let i = 0; i < 11; i++) {
             const label = document.body.appendChild(document.createElement('div'))
             label.classList.add('scrolllabel')
-            label.textContent = (`${i * 10}% + ${window.staticOffsetTop}px`)
+            label.textContent = (`${i * 10}% + ${genius.autoscroll.staticOffsetTop}px`)
             label.style.position = 'absolute'
-            label.style.top = `${offset.top + window.staticOffsetTop + div.scrollHeight * 0.1 * i}px`
+            label.style.top = `${offset.top + genius.autoscroll.staticOffsetTop + div.scrollHeight * 0.1 * i}px`
             label.style.color = 'rgba(255,0,0,0.5)'
             label.style.zIndex = 1000
           }
-
+  
           let label = document.body.appendChild(document.createElement('div'))
           label.classList.add('scrolllabel')
-          label.textContent = `Start @ offset.top +  window.staticOffsetTop = ${offset.top}px + ${window.staticOffsetTop}px`
+          label.textContent = `Start @ offset.top +  genius.autoscroll.staticOffsetTop = ${offset.top}px + ${genius.autoscroll.staticOffsetTop}px`
           label.style.position = 'absolute'
-          label.style.top = `${offset.top + window.staticOffsetTop}px`
+          label.style.top = `${offset.top + genius.autoscroll.staticOffsetTop}px`
           label.style.left = '200px'
           label.style.color = '#008000a6'
           label.style.zIndex = 1000
-
+  
           label = document.body.appendChild(document.createElement('div'))
           label.classList.add('scrolllabel')
           label.textContent = `Base @ offset.top = ${offset.top}px`
@@ -876,7 +1220,7 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
           label.style.color = '#008000a6'
           label.style.zIndex = 1000
         }
-
+  
         let indicator = document.getElementById('scrollindicator')
         if (!indicator) {
           indicator = document.body.appendChild(document.createElement('div'))
@@ -887,13 +1231,13 @@ function geniusLyrics (custom) { // eslint-disable-line no-unused-vars
           indicator.style.color = '#00dbff'
           indicator.style.zIndex = 1000
         }
-        indicator.style.top = `${offset.top + window.staticOffsetTop + div.scrollHeight * position}px`
-        indicator.innerHTML = `${parseInt(position * 100)}%  -> ${parseInt(newScrollTop)}px`
+        indicator.style.top = `${offset.top + genius.autoscroll.staticOffsetTop + div.scrollHeight * progress}px`
+        indicator.innerHTML = `${parseInt(progress * 100)}%  -> ${parseInt(newScrollTop)}px`
       }
-
+  
       await Promise.resolve(0) // wait for DOM
-      window.scrollLyricsBusy = false
-    }
+      genius.autoscroll.scrollLyricsBusy = false
+    }catch(e){console.warn(e)}
   }
 
   function loadGeniusAnnotations (song, html, annotationsEnabled, cb) {
@@ -1230,6 +1574,36 @@ Genius:     ${originalUrl}
       <br>
       <br>
        </div>`
+    },
+    fixInstrumentalBridge () { 
+
+      for(const div of document.querySelectorAll('div[data-lyrics-container="true"]')){
+
+        let innerHTML = div.innerHTML
+        let before = innerHTML
+        innerHTML = innerHTML.replace(/<br><br>\[Instrumental Bridge\]<br><br>/g, '<br><br>[Instrumental Bridge]<a id="Instrumental-Bridge"></a><br><br>')
+
+        if (before !== innerHTML) {
+          div.innerHTML = innerHTML
+        }
+        /*
+        let loop = true
+        let count = 0
+        while (loop) {  
+          let before = innerHTML
+          if(before && typeof before ==='string'){
+            innerHTML = innerHTML.replace('<br><br>[Instrumental Bridge]<br><br>', '<br><br><br><br>[Instrumental Bridge]<br><br><br><br>')
+          }
+          loop = before !== innerHTML
+          count++
+          console.log(before===innerHTML)
+        }
+        if (count > 1) {
+          div.innerHTML = innerHTML
+        }
+        */
+      }
+
     }
   }
 
@@ -1482,6 +1856,9 @@ Genius:     ${originalUrl}
   [data-lyrics-container="true"] + [data-exclude-from-selection="true"] {
     display: none;
   }
+  a#Instrumental-Bridge{
+    line-height: 420%;
+  }
   `
 
   function setAnnotationsContainerTop (c, a, isContentChanged) {
@@ -1517,35 +1894,47 @@ Genius:     ${originalUrl}
     })
   }
 
-  async function scrollToBegining () {
-    document.documentElement.classList.add('instant-scroll')
-    await new Promise(resolve => setTimeout(resolve, 100))
-    let selector = null
-    const isContentStylesIsAdded = !!document.querySelector('style#egl-contentstyles')
-    if (isContentStylesIsAdded) {
-      selector = 'html #application'
-      theme.scrollableContainer = selector
-      theme.scrollLyrics = scrollLyricsFunction(selector, 0)
-    } else {
-      selector = theme.scrollableContainer
-    }
-    let scrollable = document.querySelector(selector)
-    if (isScrollLyricsEnabled()) {
-      // scrollable.scrollIntoView(true)
-    } else if (scrollable) {
-      const innerTopElement = isContentStylesIsAdded
-        ? scrollable.querySelector('.genius-lyrics-header-content')
-        : scrollable.firstElementChild
-      scrollable = (innerTopElement || scrollable)
-      // scrollable.scrollIntoView(true)
-    } else {
-      return
-    }
-    scrollable.classList.add('genius-scrollable')
-    await Promise.resolve(0) // allow CSS rule changed
-    scrollable.scrollIntoView(true) // alignToTop = true
-    await Promise.resolve(0) // allow DOM scrollTop changed
-    document.documentElement.classList.remove('instant-scroll')
+  async function scrollToBegining () { // action in iframe
+    try {
+      unScroll() // prevent any values set before
+      document.documentElement.classList.add('instant-scroll')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      const isContentStylesIsAdded = !!document.querySelector('style#egl-contentstyles')
+      if (isContentStylesIsAdded) {
+        theme.scrollableContainer = 'html #application'
+        theme.defaultStaticOffsetTop = 0
+      }
+      const selector = theme.scrollableContainer
+      let scrollable = document.querySelector(selector)
+      if (isScrollLyricsEnabled()) {
+        // scrollable.scrollIntoView(true)
+      } else if (scrollable) {
+        const innerTopElement = isContentStylesIsAdded
+          ? scrollable.querySelector('.genius-lyrics-header-content')
+          : scrollable.firstElementChild
+        scrollable = (innerTopElement || scrollable)
+        // scrollable.scrollIntoView(true)
+      } else {
+        return
+      }
+      if(genius.autoscroll.enableDerate === true){
+        let text1=scrollable.innerHTML.replace(/<br \/>/g,'<br>')
+        let text2=text1
+        text2=text2.replace(/<br>\[(Verse \d|Pre-Chorus|Chorus|Post-Chorus)\]<br>/g,'<br><br>')
+        text2=text2.replace(/<br>(<br>)+/g,'<br>')
+        genius.autoscroll.param1= text2.split('<br>').length / text1.split('<br>').length
+        if(genius.autoscroll.debug === true){
+          console.log( text2.split('<br>').length , text1.split('<br>').length)
+        }
+      }
+      scrollable.classList.add('genius-scrollable')
+      await Promise.resolve(0) // allow CSS rule changed
+      scrollable.scrollIntoView(true) // alignToTop = true
+      await Promise.resolve(0) // allow DOM scrollTop changed
+      document.documentElement.classList.remove('instant-scroll')
+      const scrollingElementInfo = getScrollingElementInfo()
+      top.postMessage({ iAm: custom.scriptName, type: 'autoscrollSetup', scrollingElementInfo, currentStaticOffsetTop: genius.autoscroll.staticOffsetTop, defaultStaticOffsetTop: theme.defaultStaticOffsetTop }, '*')
+    } catch (e) { console.warn(e) }
   }
 
   const themes = {
@@ -1553,6 +1942,7 @@ Genius:     ${originalUrl}
       name: 'Genius (Default)',
       themeKey: 'genius',
       scrollableContainer: 'div[class*="SongPage__LyricsWrapper"]',
+      defaultStaticOffsetTop: 0,
       scripts: function themeGeniusScripts () {
         const onload = []
 
@@ -1620,6 +2010,8 @@ Genius:     ${originalUrl}
           }
         })
         onload.push(hideStuff)
+
+        onload.push(themeCommon.fixInstrumentalBridge)
 
         // Make expandable content buttons work
         function expandContent () {
@@ -1709,20 +2101,21 @@ Genius:     ${originalUrl}
         html = appendHeadText(html, headhtml)
 
         return cb(html)
-      },
-      // scrollLyrics: scrollLyricsFunction('div[class^="Lyrics__Container"]', -200)
-      scrollLyrics: scrollLyricsFunction('div[class*="SongPage__LyricsWrapper"]', 0)
+      }
     },
 
     cleanwhite: {
       name: 'Clean white', // secondary theme
       themeKey: 'cleanwhite',
       scrollableContainer: '.lyrics_body_pad',
+      defaultStaticOffsetTop: 0,
       scripts: function themeCleanWhiteScripts () {
         const onload = []
 
         onload.push(themeCommon.targetBlankLinks)
         onload.push(() => setTimeout(themeCommon.targetBlankLinks, 1000))
+
+        onload.push(themeCommon.fixInstrumentalBridge)
 
         // Handle annotations
         if (!annotationsEnabled) {
@@ -1829,14 +2222,14 @@ Genius:     ${originalUrl}
           </body>
           </html>
           `)
-      },
-      scrollLyrics: scrollLyricsFunction('.lyrics_body_pad', 0)
+      }
     },
 
     spotify: {
       name: 'Spotify', // secondary theme
       themeKey: 'spotify',
       scrollableContainer: '.lyrics_body_pad',
+      defaultStaticOffsetTop: 0,
       scripts: function themeSpotifyScripts () {
         const onload = []
 
@@ -1848,6 +2241,8 @@ Genius:     ${originalUrl}
         onload.push(themeCommon.hideFooter)
         onload.push(themeCommon.hideSecondaryFooter)
         onload.push(themeCommon.hideStuff235)
+
+        onload.push(themeCommon.fixInstrumentalBridge)
 
         // Make song title clickable
         function clickableTitle () {
@@ -1992,8 +2387,7 @@ Genius:     ${originalUrl}
           </body>
           </html>
           `)
-      },
-      scrollLyrics: scrollLyricsFunction('.lyrics_body_pad', 0)
+      }
     }
   }
 
@@ -3469,6 +3863,8 @@ Link__StyledLink
       return
     }
 
+    genius.autoscroll.isPageAbleForAutoScroll = false // in main window
+
     let spinnerDOM = null
     if ('customSpinnerDOM' in custom && typeof custom.customSpinnerDOM === 'function') {
       spinnerDOM = custom.customSpinnerDOM(container, bar, iframe)
@@ -3506,7 +3902,6 @@ Link__StyledLink
       // such as user clicking back btn
       isShowLyricsIsCancelledByUser = true
       isShowLyricsInterrupted = true
-      unScroll()
       try {
         spinnerDOM.remove()
       } catch (e) {
@@ -3520,7 +3915,6 @@ Link__StyledLink
     }
 
     spinnerUpdate('5', 'Downloading lyrics...', 0, 'start')
-    unScroll()
     window.postMessage({ iAm: custom.scriptName, type: 'lyricsDisplayState', visibility: 'loading', song: songInfo, searchresultsLengths }, '*')
 
     function interuptedByExternal () {
@@ -3616,15 +4010,12 @@ Link__StyledLink
           clear() // loaded
           spinnerUpdate(null, null, 901, 'complete')
           window.postMessage({ iAm: custom.scriptName, type: 'lyricsDisplayState', visibility: 'loaded', lyricsSuccess: true }, '*')
-          unScroll()
           setTimeout(() => {
-            // delay required due to scrollToBegining() is changing the scrollTop
-            window.isPageAbleForAutoScroll = true
-          }, 240)
+            genius.autoscroll.isPageAbleForAutoScroll = true // in main window
+          }, 140)
         })
         addOneMessageListener('iframeContentRendered', function (ev) {
           if (isShowLyricsIsCancelledByUser || window.showLyricsIdentifier !== currentFunctionClosureIdentifier) return
-          unScroll()
         })
 
         function reloadFrame () {
@@ -3648,7 +4039,6 @@ Link__StyledLink
           console.debug('tv2')
           clear() // unable to load
           spinnerUpdate(null, null, 902, 'failed')
-          unScroll()
           window.postMessage({ iAm: custom.scriptName, type: 'lyricsDisplayState', visibility: 'loaded', lyricsSuccess: false }, '*')
           if (!loadingFailed) {
             console.debug('try again fresh')
@@ -3685,7 +4075,7 @@ Link__StyledLink
           }
           spinnerUpdate('2', 'Rendering...', 301, 'pageRendering')
           if (iframe.contentWindow && iframe.contentWindow.postMessage) {
-            iframe.contentWindow.postMessage({ iAm: custom.scriptName, type: 'writehtml', html, contentStyle, themeKey: genius.option.themeKey }, '*')
+            iframe.contentWindow.postMessage({ iAm: custom.scriptName, type: 'writehtml', html, contentStyle, themeKey: genius.option.themeKey, autoscroll: {debug: genius.autoscroll.debug, enableDerate:genius.autoscroll.enableDerate} }, '*')
           } else if (iframe.closest('html, body') === null) {
             // unlikely as interupter_lyricsDisplayState is checked
             unableToProcess('iframe#lyricsiframe was removed from the page. No contentWindow could be found.')
@@ -3716,14 +4106,14 @@ Link__StyledLink
     autoScrollEnabled = newValue
   }
   function isScrollLyricsEnabled () {
-    return autoScrollEnabled && ('scrollLyrics' in theme) // note: if iframe is not ready, still no action
+    return autoScrollEnabled // note: if iframe is not ready, still no action
   }
 
   function isScrollLyricsCallable () {
-    return autoScrollEnabled && ('scrollLyrics' in theme) && window.isPageAbleForAutoScroll === true // note: if iframe is not ready, still no action
+    return autoScrollEnabled && genius.autoscroll.isPageAbleForAutoScroll === true // note: if iframe is not ready, still no action
   }
 
-  function scrollLyrics (positionFraction) {
+  function scrollLyrics (obj) { // in main window
     if (isScrollLyricsCallable() === false) {
       return
     }
@@ -3731,7 +4121,7 @@ Link__StyledLink
     const iframe = document.getElementById('lyricsiframe')
     const contentWindow = (iframe || 0).contentWindow
     if (contentWindow && typeof contentWindow.postMessage === 'function') {
-      contentWindow.postMessage({ iAm: custom.scriptName, type: 'scrollLyrics', position: positionFraction }, '*')
+      contentWindow.postMessage({ iAm: custom.scriptName, type: 'scrollLyrics', position: obj }, '*')
     }
   }
 
@@ -4173,6 +4563,7 @@ Link__StyledLink
     }
 
     // iframe
+    unScroll() // prevent if there is any lyrics content in iframe
     let e = await new Promise(resolve => {
       // only receive 'writehtml' message once
       let msgFn = function (ev) {
@@ -4192,6 +4583,11 @@ Link__StyledLink
         // in case top is not accessible from iframe
       }
     })
+
+
+    let autoscroll = e.data.autoscroll
+    genius.autoscroll.debug = autoscroll.debug
+    genius.autoscroll.enableDerate = autoscroll.enableDerate
 
     if ('themeKey' in e.data && Object.prototype.hasOwnProperty.call(themes, e.data.themeKey)) {
       genius.option.themeKey = e.data.themeKey
@@ -4302,14 +4698,12 @@ Link__StyledLink
       }
     }
     // Scroll lyrics event
-    if ('scrollLyrics' in theme) {
-      window.addEventListener('message', function (e) {
-        if (typeof e.data !== 'object' || !('iAm' in e.data) || e.data.iAm !== custom.scriptName || e.data.type !== 'scrollLyrics' || !('scrollLyrics' in theme)) {
-          return
-        }
-        theme.scrollLyrics(e.data.position)
-      })
-    }
+    window.addEventListener('message', function (e) {
+      if (typeof e.data !== 'object' || !('iAm' in e.data) || e.data.iAm !== custom.scriptName || e.data.type !== 'scrollLyrics') {
+        return
+      }
+      scrollLyricsGeneric(e.data.position) // action in iframe
+    })
     if ('toggleLyricsKey' in custom) {
       addKeyboardShortcutInFrame(custom.toggleLyricsKey)
     }
